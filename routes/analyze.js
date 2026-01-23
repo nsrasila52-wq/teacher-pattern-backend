@@ -1,70 +1,20 @@
 const express = require("express");
 const router = express.Router();
-const multer = require("multer");
-const pdfParse = require("pdf-parse");
 
 const generatePredictionSentence = require("../utils/predictionGenerator");
-const cleanQuestionTypes = require("../utils/cleanQuestionTypes");
-const categorizeQuestionType = require("../utils/categorizeQuestionType");
+const cleanQuestionTypes = require("../utils/cleanQuestionTypes"); // ✅ STEP 8.1
+const categorizeQuestionType = require("../utils/categorizeQuestionType"); // ✅ STEP 8.2
 
-/* ------------------------------
-   MULTER SETUP (PDF)
------------------------------- */
-const upload = multer({
-  storage: multer.memoryStorage()
-});
-
-/* ------------------------------
-   ANALYZE ROUTE
------------------------------- */
-router.post("/analyze", upload.single("pdf"), async (req, res) => {
+router.post("/analyze", async (req, res) => {
   try {
-    let uploadedPapers = req.body.papers || [];
-
-    /* ------------------------------------
-       🔑 FIX: PDF → papers conversion
-    ------------------------------------ */
-    if (uploadedPapers.length === 0 && req.file) {
-      const pdfData = await pdfParse(req.file.buffer);
-      const text = pdfData.text || "";
-
-      // VERY BASIC extraction (safe, minimal)
-      const topics = [];
-      const question_types = [];
-
-      const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
-
-      lines.forEach(line => {
-        if (line.match(/numerical|calculate|find/i)) {
-          question_types.push("Numerical");
-        }
-        if (line.match(/choose|mcq|option/i)) {
-          question_types.push("MCQ");
-        }
-        if (line.match(/define|explain|theory/i)) {
-          question_types.push("Theory");
-        }
-
-        if (line.match(/electrostatics/i)) topics.push("Electrostatics");
-        if (line.match(/optics/i)) topics.push("Optics");
-        if (line.match(/current electricity/i)) topics.push("Current Electricity");
-      });
-
-      uploadedPapers = [
-        {
-          topics,
-          question_types
-        }
-      ];
-    }
-
-    /* ===============================
-       🔽 BELOW THIS: UNCHANGED CODE
-       (YOUR ORIGINAL LOGIC)
-    =============================== */
+    const uploadedPapers = req.body.papers || [];
 
     const papersData = [];
     const topicPaperMap = {};
+
+    /* ------------------------------
+       STEP 6.1 – Paper-wise storage
+    ------------------------------ */
 
     uploadedPapers.forEach((paper, index) => {
       const paperTopics = paper?.topics || [];
@@ -104,6 +54,8 @@ router.post("/analyze", upload.single("pdf"), async (req, res) => {
         },
         prediction_sentence:
           "No papers uploaded yet. Upload past papers to generate predictions.",
+        prediction_reliability: 0,
+        prediction_explanation: [],
         top_topics: [],
         focus_topics: [],
         repeated_question_types: {},
@@ -114,22 +66,174 @@ router.post("/analyze", upload.single("pdf"), async (req, res) => {
       });
     }
 
-    /* 🔽 REST OF YOUR FILE = 100% SAME 🔽 */
-    /* (no changes below, intentionally) */
+    /* ------------------------------
+       STEP 6.4 – Recent paper weighting
+    ------------------------------ */
 
-    // 👇 yahan se tumhara existing code as-is rahega
-    // combinedTopics, probability, trends, momentum,
-    // STEP 8.1, 8.2, 8.3, prediction sentence, response
-    // (unchanged)
+    const recentPaperCount = Math.max(1, Math.ceil(totalPapers * 0.4));
+    const recentPaperIds = papersData
+      .slice(-recentPaperCount)
+      .map(p => p.paper_id);
 
-    // ⚠️ NOTE:
-    // Tum jo code upar paste karke laaye ho
-    // uska remaining part yahin same rahega
+    let combinedTopics = {};
+    let combinedQuestionTypes = {};
 
-    // 👉 To keep message readable, yahan truncate kar raha hoon
-    // but TUMHE sirf upar ka FIX add karna hai
-    // aur baaki apna original code paste rehne dena
+    papersData.forEach(paper => {
+      const isRecent = recentPaperIds.includes(paper.paper_id);
+      const weight = isRecent ? 1.5 : 1;
 
+      Object.entries(paper.topics).forEach(([topic, count]) => {
+        combinedTopics[topic] =
+          (combinedTopics[topic] || 0) + count * weight;
+      });
+
+      Object.entries(paper.question_types).forEach(([qt, count]) => {
+        combinedQuestionTypes[qt] =
+          (combinedQuestionTypes[qt] || 0) + count * weight;
+      });
+    });
+
+    /* ------------------------------
+       Probability
+    ------------------------------ */
+
+    const totalWeighted = Object.values(combinedTopics).reduce(
+      (a, b) => a + b,
+      0
+    );
+
+    const sortedTopics = Object.entries(combinedTopics)
+      .map(([topic, count]) => ({
+        topic,
+        probability: Math.round((count / totalWeighted) * 100)
+      }))
+      .sort((a, b) => b.probability - a.probability);
+
+    /* ------------------------------
+       STEP 6.3 – Trend
+    ------------------------------ */
+
+    const topicTrends = Object.entries(topicPaperMap).map(
+      ([topic, paperSet]) => {
+        const count = paperSet.size;
+        let trend = "Weak";
+        if (count >= 3) trend = "Strong";
+        else if (count === 2) trend = "Moderate";
+
+        return { topic, appeared_in_papers: count, trend };
+      }
+    );
+
+    /* ------------------------------
+       STEP 6.4.2 – Momentum
+    ------------------------------ */
+
+    const topicRecentOld = {};
+
+    papersData.forEach(paper => {
+      const isRecent = recentPaperIds.includes(paper.paper_id);
+      Object.entries(paper.topics).forEach(([topic, count]) => {
+        if (!topicRecentOld[topic]) {
+          topicRecentOld[topic] = { recent: 0, old: 0 };
+        }
+        if (isRecent) topicRecentOld[topic].recent += count;
+        else topicRecentOld[topic].old += count;
+      });
+    });
+
+    const topicMomentum = Object.entries(topicRecentOld).map(
+      ([topic, c]) => {
+        let momentum = "Stable";
+        if (c.recent > c.old) momentum = "Rising";
+        else if (c.recent < c.old) momentum = "Declining";
+
+        return {
+          topic,
+          recent_count: c.recent,
+          old_count: c.old,
+          momentum
+        };
+      }
+    );
+
+    /* ------------------------------
+       STEP 8.1 + 8.2
+    ------------------------------ */
+
+    const rawQuestionTypes = Object.entries(combinedQuestionTypes)
+      .sort((a, b) => b[1] - a[1])
+      .map(q => q[0]);
+
+    const cleanedQuestionTypes = cleanQuestionTypes(rawQuestionTypes);
+
+    const categorizedQuestionTypes = {};
+
+    cleanedQuestionTypes.forEach(q => {
+      const category = categorizeQuestionType(q);
+      if (!categorizedQuestionTypes[category]) {
+        categorizedQuestionTypes[category] = [];
+      }
+      categorizedQuestionTypes[category].push(q);
+    });
+
+    /* ------------------------------
+       STEP 8.3 – TRUE FREQUENCY (FIXED) ✅
+    ------------------------------ */
+
+    const questionTypeFrequency = Object.entries(categorizedQuestionTypes)
+      .map(([category, questions]) => {
+        const totalCount = questions.reduce(
+          (sum, q) => sum + (combinedQuestionTypes[q] || 0),
+          0
+        );
+        return { category, count: totalCount };
+      })
+      .sort((a, b) => b.count - a.count);
+
+    const topQuestionPatterns = questionTypeFrequency.slice(0, 3);
+
+    /* ------------------------------
+       Prediction
+    ------------------------------ */
+
+    const topPrediction = sortedTopics[0];
+    const dominantQuestionType =
+      questionTypeFrequency[0]?.category || "General";
+
+    const prediction = {
+      topic: topPrediction.topic,
+      probability: topPrediction.probability,
+      question_type: dominantQuestionType
+    };
+
+    const prediction_sentence = generatePredictionSentence({
+      topic: prediction.topic,
+      appearedCount: Math.round(combinedTopics[prediction.topic]),
+      totalPapers,
+      probabilityPercent: prediction.probability
+    });
+
+    /* ------------------------------
+       FINAL RESPONSE
+    ------------------------------ */
+
+    res.json({
+      total_papers: totalPapers,
+      prediction,
+      prediction_sentence,
+      top_topics: sortedTopics,
+      focus_topics: sortedTopics.map(t => ({
+        topic: t.topic,
+        times_asked: Math.round(combinedTopics[t.topic]),
+        probability: t.probability,
+        strength: "High"
+      })),
+      repeated_question_types: categorizedQuestionTypes, // ✅ 8.2
+      question_type_frequency: questionTypeFrequency,    // ✅ 8.3 FIXED
+      top_question_patterns: topQuestionPatterns,        // ✅ 8.3
+      topic_trends: topicTrends,
+      topic_momentum: topicMomentum
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Analysis failed" });

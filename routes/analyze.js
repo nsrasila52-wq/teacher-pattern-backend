@@ -1,7 +1,8 @@
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
-const pdfParse = require("pdf-parse/lib/pdf-parse");
+const pdfParse = require("pdf-parse")
+
 
 
 const generatePredictionSentence = require("../utils/predictionGenerator");
@@ -19,8 +20,9 @@ router.post("/analyze", upload.single("pdf"), async (req, res) => {
 
     console.log("FILE RECEIVED:", req.file.originalname);
 
-    const pdfData = await pdfParse(req.file.buffer);
-    const text = pdfData.text.toLowerCase();
+    const data = await pdfParse(buffer)
+    const text = data.text
+
 
     /* -------- SIMPLE REAL EXTRACTION -------- */
     const topics = [];

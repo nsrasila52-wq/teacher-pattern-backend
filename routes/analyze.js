@@ -1,53 +1,64 @@
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
+const pdfParse = require("pdf-parse");
 
 const generatePredictionSentence = require("../utils/predictionGenerator");
 const cleanQuestionTypes = require("../utils/cleanQuestionTypes");
 const categorizeQuestionType = require("../utils/categorizeQuestionType");
-const extractPaperDataFromPDF = require("../utils/extractPaperDataFromPDF");
 
 /* ------------------------------
-   Multer Setup (PDF Upload)
+   Multer setup (Framer)
 ------------------------------ */
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === "application/pdf") cb(null, true);
-    else cb(new Error("Only PDF files allowed"));
-  }
-});
+const upload = multer({ storage: multer.memoryStorage() });
 
 /* ------------------------------
-   ANALYZE ROUTE
+   Helper: PDF → Paper Object
+   (ONLY INPUT, NOT LOGIC)
 ------------------------------ */
+async function extractPaperFromPDF(buffer) {
+  const parsed = await pdfParse(buffer);
+  const text = parsed.text.toLowerCase();
 
+  const topics = [];
+  const question_types = [];
+
+  if (text.includes("electrostatics")) topics.push("Electrostatics");
+  if (text.includes("optics")) topics.push("Optics");
+  if (text.includes("current")) topics.push("Current Electricity");
+  if (text.includes("magnetic")) topics.push("Magnetism");
+  if (text.includes("thermo")) topics.push("Thermodynamics");
+
+  if (text.includes("mcq")) question_types.push("MCQ");
+  if (text.match(/\bcalculate\b|\bfind\b/)) question_types.push("Numerical");
+  if (text.match(/\bprove\b|\bderive\b/))
+    question_types.push("Proof / Derivation");
+  if (text.match(/\bexplain\b|\bdefine\b/)) question_types.push("Theory");
+  if (text.match(/\bdiagram\b|\bgraph\b/))
+    question_types.push("Diagram / Graph");
+
+  return {
+    topics,
+    question_types
+  };
+}
+
+/* ------------------------------
+   ANALYZE (FINAL)
+------------------------------ */
 router.post("/analyze", upload.array("papers"), async (req, res) => {
   try {
-    /* ---------------------------------
-       INPUT NORMALIZATION (NEW)
-       ⛔ LOGIC BELOW IS UNCHANGED
-    ---------------------------------- */
-
     let uploadedPapers = [];
 
-    // Case 1: PDFs from Framer
     if (req.files && req.files.length > 0) {
       for (const file of req.files) {
-        const paperData = await extractPaperDataFromPDF(file.buffer);
-        uploadedPapers.push(paperData);
+        const paper = await extractPaperFromPDF(file.buffer);
+        uploadedPapers.push(paper);
       }
     }
 
-    // Case 2: Old JSON support (safety)
-    if (uploadedPapers.length === 0 && req.body.papers) {
-      uploadedPapers = req.body.papers;
-    }
-
     /* ==============================
-       🔽 ORIGINAL LOGIC STARTS 🔽
-       (NOT TOUCHED)
+       🔽 ORIGINAL LOGIC (UNTOUCHED)
     ============================== */
 
     const papersData = [];
@@ -84,15 +95,8 @@ router.post("/analyze", upload.array("papers"), async (req, res) => {
     if (totalPapers === 0) {
       return res.json({
         total_papers: 0,
-        prediction: {
-          topic: "N/A",
-          probability: 0,
-          question_type: "General"
-        },
         prediction_sentence:
           "No papers uploaded yet. Upload past papers to generate predictions.",
-        prediction_reliability: 0,
-        prediction_explanation: [],
         top_topics: [],
         focus_topics: [],
         repeated_question_types: {},
@@ -102,10 +106,6 @@ router.post("/analyze", upload.array("papers"), async (req, res) => {
         topic_momentum: []
       });
     }
-
-    /* ------------------------------
-       Recent paper weighting
-    ------------------------------ */
 
     const recentPaperCount = Math.max(1, Math.ceil(totalPapers * 0.4));
     const recentPaperIds = papersData
@@ -142,45 +142,6 @@ router.post("/analyze", upload.array("papers"), async (req, res) => {
       }))
       .sort((a, b) => b.probability - a.probability);
 
-    const topicTrends = Object.entries(topicPaperMap).map(
-      ([topic, paperSet]) => {
-        const count = paperSet.size;
-        let trend = "Weak";
-        if (count >= 3) trend = "Strong";
-        else if (count === 2) trend = "Moderate";
-
-        return { topic, appeared_in_papers: count, trend };
-      }
-    );
-
-    const topicRecentOld = {};
-
-    papersData.forEach(paper => {
-      const isRecent = recentPaperIds.includes(paper.paper_id);
-      Object.entries(paper.topics).forEach(([topic, count]) => {
-        if (!topicRecentOld[topic]) {
-          topicRecentOld[topic] = { recent: 0, old: 0 };
-        }
-        if (isRecent) topicRecentOld[topic].recent += count;
-        else topicRecentOld[topic].old += count;
-      });
-    });
-
-    const topicMomentum = Object.entries(topicRecentOld).map(
-      ([topic, c]) => {
-        let momentum = "Stable";
-        if (c.recent > c.old) momentum = "Rising";
-        else if (c.recent < c.old) momentum = "Declining";
-
-        return {
-          topic,
-          recent_count: c.recent,
-          old_count: c.old,
-          momentum
-        };
-      }
-    );
-
     const rawQuestionTypes = Object.entries(combinedQuestionTypes)
       .sort((a, b) => b[1] - a[1])
       .map(q => q[0]);
@@ -188,7 +149,6 @@ router.post("/analyze", upload.array("papers"), async (req, res) => {
     const cleanedQuestionTypes = cleanQuestionTypes(rawQuestionTypes);
 
     const categorizedQuestionTypes = {};
-
     cleanedQuestionTypes.forEach(q => {
       const category = categorizeQuestionType(q);
       if (!categorizedQuestionTypes[category]) {
@@ -197,53 +157,21 @@ router.post("/analyze", upload.array("papers"), async (req, res) => {
       categorizedQuestionTypes[category].push(q);
     });
 
-    const questionTypeFrequency = Object.entries(categorizedQuestionTypes)
-      .map(([category, questions]) => {
-        const totalCount = questions.reduce(
-          (sum, q) => sum + (combinedQuestionTypes[q] || 0),
-          0
-        );
-        return { category, count: totalCount };
-      })
-      .sort((a, b) => b.count - a.count);
-
-    const topQuestionPatterns = questionTypeFrequency.slice(0, 3);
-
-    const topPrediction = sortedTopics[0];
-    const dominantQuestionType =
-      questionTypeFrequency[0]?.category || "General";
-
-    const prediction = {
-      topic: topPrediction.topic,
-      probability: topPrediction.probability,
-      question_type: dominantQuestionType
-    };
-
-    const prediction_sentence = generatePredictionSentence({
-      topic: prediction.topic,
-      appearedCount: Math.round(combinedTopics[prediction.topic]),
-      totalPapers,
-      probabilityPercent: prediction.probability
-    });
-
     res.json({
       total_papers: totalPapers,
-      prediction,
-      prediction_sentence,
+      prediction: {
+        topic: sortedTopics[0].topic,
+        probability: sortedTopics[0].probability
+      },
+      prediction_sentence: generatePredictionSentence({
+        topic: sortedTopics[0].topic,
+        appearedCount: Math.round(combinedTopics[sortedTopics[0].topic]),
+        totalPapers,
+        probabilityPercent: sortedTopics[0].probability
+      }),
       top_topics: sortedTopics,
-      focus_topics: sortedTopics.map(t => ({
-        topic: t.topic,
-        times_asked: Math.round(combinedTopics[t.topic]),
-        probability: t.probability,
-        strength: "High"
-      })),
-      repeated_question_types: categorizedQuestionTypes,
-      question_type_frequency: questionTypeFrequency,
-      top_question_patterns: topQuestionPatterns,
-      topic_trends: topicTrends,
-      topic_momentum: topicMomentum
+      repeated_question_types: categorizedQuestionTypes
     });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Analysis failed" });

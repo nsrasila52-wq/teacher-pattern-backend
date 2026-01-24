@@ -2,6 +2,10 @@ const express = require("express");
 const router = express.Router();
 const multer = require("multer");
 
+// ✅ SAFE IMPORT (function OR default dono handle)
+const pdfParseLib = require("pdf-parse");
+const pdfParse = pdfParseLib.default || pdfParseLib;
+
 const upload = multer({ storage: multer.memoryStorage() });
 
 router.post("/analyze", upload.single("pdf"), async (req, res) => {
@@ -10,9 +14,7 @@ router.post("/analyze", upload.single("pdf"), async (req, res) => {
       return res.status(400).json({ error: "No PDF uploaded" });
     }
 
-    // 🔥 BULLETPROOF pdf-parse LOAD
-    const pdfParse = (await import("pdf-parse")).default;
-
+    // ✅ GUARANTEED FUNCTION CALL
     const data = await pdfParse(req.file.buffer);
 
     res.json({

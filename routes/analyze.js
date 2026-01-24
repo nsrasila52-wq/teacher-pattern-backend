@@ -1,100 +1,160 @@
-const express = require("express")
-const multer = require("multer")
-const pdfParse = require("pdf-parse")
+const express = require("express");
+const router = express.Router();
+const multer = require("multer");
+const pdfParse = require("pdf-parse");
 
-const router = express.Router()
+const upload = multer({ storage: multer.memoryStorage() });
 
-// =======================
-// MULTER CONFIG
-// =======================
-const upload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
-})
+/* =========================
+   SUBJECT TOPIC MAP
+========================= */
 
-// =======================
-// SUBJECT KEYWORDS (LOCKED)
-// =======================
-const SUBJECT_KEYWORDS = {
-    Electrochemistry: ["electrolysis", "electrode", "faraday", "electrochemical"],
-    Thermodynamics: ["enthalpy", "entropy", "gibbs", "heat"],
-    Optics: ["lens", "mirror", "refraction", "diffraction"],
-    Mechanics: ["force", "motion", "velocity", "acceleration"],
-    CurrentElectricity: ["current", "ohm", "resistance", "circuit"],
-    Magnetism: ["magnetic", "flux", "induction"],
-    General: [],
+const SUBJECT_TOPICS = {
+  Physics: [
+    "Mechanics",
+    "Kinematics",
+    "Laws of Motion",
+    "Work Energy Power",
+    "Thermodynamics",
+    "Electrostatics",
+    "Current Electricity",
+    "Magnetism",
+    "Optics",
+    "Modern Physics",
+  ],
+
+  Chemistry: [
+    "Organic Chemistry",
+    "Inorganic Chemistry",
+    "Physical Chemistry",
+    "Chemical Bonding",
+    "Thermochemistry",
+    "Electrochemistry",
+    "Solutions",
+    "Atomic Structure",
+  ],
+
+  Maths: [
+    "Calculus",
+    "Differentiation",
+    "Integration",
+    "Probability",
+    "Trigonometry",
+    "Matrices",
+    "Determinants",
+    "Vectors",
+  ],
+
+  Biology: [
+    "Genetics",
+    "Cell Biology",
+    "Human Physiology",
+    "Plant Physiology",
+    "Ecology",
+    "Evolution",
+    "Biotechnology",
+  ],
+
+  SST: [
+    "History",
+    "Geography",
+    "Civics",
+    "Economics",
+    "Political Science",
+  ],
+
+  Commerce: [
+    "Accounting",
+    "Partnership",
+    "Company Accounts",
+    "Economics",
+    "Business Studies",
+    "Statistics",
+  ],
+};
+
+/* =========================
+   HELPERS
+========================= */
+
+function detectSubject(text) {
+  for (const subject in SUBJECT_TOPICS) {
+    for (const topic of SUBJECT_TOPICS[subject]) {
+      if (text.includes(topic.toLowerCase())) {
+        return subject;
+      }
+    }
+  }
+  return "General";
 }
 
-// =======================
-// ANALYZE ROUTE
-// =======================
+function analyzeTopics(text, topics) {
+  const counts = {};
+  topics.forEach((t) => (counts[t] = 0));
+
+  topics.forEach((topic) => {
+    const regex = new RegExp(topic, "gi");
+    const matches = text.match(regex);
+    if (matches) counts[topic] += matches.length;
+  });
+
+  return counts;
+}
+
+/* =========================
+   ROUTE
+========================= */
+
 router.post("/analyze", upload.array("pdfs"), async (req, res) => {
-    try {
-        if (!req.files || req.files.length === 0) {
-            return res.status(400).json({ error: "No PDFs uploaded" })
-        }
-
-        let combinedText = ""
-
-        // 🔹 Parse all PDFs
-        for (const file of req.files) {
-            const parsed = await pdfParse(file.buffer)
-            combinedText += " " + parsed.text.toLowerCase()
-        }
-
-        // =======================
-        // TOPIC COUNTING
-        // =======================
-        const topicCount = {}
-        let totalHits = 0
-
-        for (const topic in SUBJECT_KEYWORDS) {
-            let count = 0
-            SUBJECT_KEYWORDS[topic].forEach(keyword => {
-                const regex = new RegExp(`\\b${keyword}\\b`, "g")
-                const matches = combinedText.match(regex)
-                if (matches) count += matches.length
-            })
-
-            if (count > 0) {
-                topicCount[topic] = count
-                totalHits += count
-            }
-        }
-
-        // =======================
-        // SAFETY: NO DATA
-        // =======================
-        if (totalHits === 0) {
-            return res.json({
-                prediction_sentence: "Not enough data to generate prediction.",
-                top_topics: [],
-            })
-        }
-
-        // =======================
-        // CALCULATE PROBABILITY
-        // =======================
-        const topTopics = Object.entries(topicCount)
-            .map(([topic, count]) => ({
-                topic,
-                probability: Math.round((count / totalHits) * 100),
-            }))
-            .sort((a, b) => b.probability - a.probability)
-
-        const main = topTopics[0]
-
-        // =======================
-        // FINAL RESPONSE
-        // =======================
-        res.json({
-            prediction_sentence: `${main.topic} has high chances of appearing again.`,
-            top_topics: topTopics,
-        })
-    } catch (err) {
-        console.error("PDF ANALYSIS ERROR:", err)
-        res.status(500).json({ error: "PDF analysis failed" })
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.json({
+        prediction_sentence: "Not enough data to generate prediction.",
+        top_topics: [],
+      });
     }
-})
 
-module.exports = router
+    let combinedText = "";
+
+    for (const file of req.files) {
+      const data = await pdfParse(file.buffer);
+      combinedText += data.text.toLowerCase();
+    }
+
+    const subject = detectSubject(combinedText);
+    const topics =
+      SUBJECT_TOPICS[subject] || Object.values(SUBJECT_TOPICS).flat();
+
+    const topicCounts = analyzeTopics(combinedText, topics);
+    const total = Object.values(topicCounts).reduce((a, b) => a + b, 0);
+
+    if (total < 3) {
+      return res.json({
+        prediction_sentence: "Not enough data to generate prediction.",
+        top_topics: [],
+      });
+    }
+
+    const sorted = Object.entries(topicCounts)
+      .filter(([_, c]) => c > 0)
+      .sort((a, b) => b[1] - a[1]);
+
+    const topTopics = sorted.map(([topic, count]) => ({
+      topic,
+      probability: Math.round((count / total) * 100),
+    }));
+
+    const prediction_sentence = `${topTopics[0].topic} has high chances of appearing again.`;
+
+    res.json({
+      subject,
+      prediction_sentence,
+      top_topics: topTopics,
+    });
+  } catch (err) {
+    console.error("PDF ANALYSIS ERROR:", err);
+    res.status(500).json({ error: "PDF analysis failed" });
+  }
+});
+
+module.exports = router;

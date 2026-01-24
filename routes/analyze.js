@@ -2,9 +2,6 @@ const express = require("express");
 const router = express.Router();
 const multer = require("multer");
 
-// ✅ FINAL CORRECT IMPORT
-const { default: pdfParse } = require("pdf-parse");
-
 const upload = multer({ storage: multer.memoryStorage() });
 
 router.post("/analyze", upload.single("pdf"), async (req, res) => {
@@ -13,11 +10,14 @@ router.post("/analyze", upload.single("pdf"), async (req, res) => {
       return res.status(400).json({ error: "No PDF uploaded" });
     }
 
-    // ✅ THIS WILL WORK NOW
+    // 🔥 BULLETPROOF pdf-parse LOAD
+    const pdfParse = (await import("pdf-parse")).default;
+
     const data = await pdfParse(req.file.buffer);
 
     res.json({
       prediction_sentence: "PDF parsed successfully 🎉",
+      text_length: data.text.length,
       top_topics: [
         { topic: "Electrostatics", probability: 50 },
         { topic: "Optics", probability: 50 },

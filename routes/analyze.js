@@ -5,156 +5,165 @@ const pdfParse = require("pdf-parse");
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-/* =========================
-   SUBJECT TOPIC MAP
-========================= */
+/* ================================
+   🔑 MASTER SUBJECT KEYWORDS
+================================ */
 
-const SUBJECT_TOPICS = {
-  Physics: [
-    "Mechanics",
-    "Kinematics",
-    "Laws of Motion",
-    "Work Energy Power",
-    "Thermodynamics",
-    "Electrostatics",
-    "Current Electricity",
-    "Magnetism",
-    "Optics",
-    "Modern Physics",
-  ],
+const SUBJECT_KEYWORDS = {
+    // 🔢 MATHS
+    Mathematics: [
+        "solve", "calculate", "find", "prove", "equation", "value",
+        "derivative", "integration", "limit", "matrix", "determinant",
+        "probability", "statistics", "mean", "median", "mode",
+        "vector", "algebra", "trigonometry", "geometry"
+    ],
 
-  Chemistry: [
-    "Organic Chemistry",
-    "Inorganic Chemistry",
-    "Physical Chemistry",
-    "Chemical Bonding",
-    "Thermochemistry",
-    "Electrochemistry",
-    "Solutions",
-    "Atomic Structure",
-  ],
+    // ⚡ PHYSICS
+    Physics: [
+        "force", "motion", "velocity", "acceleration", "current",
+        "voltage", "resistance", "power", "energy", "work",
+        "ray", "mirror", "lens", "refraction", "reflection",
+        "mechanics", "electrostatics", "magnetism",
+        "thermodynamics", "heat", "wave", "frequency"
+    ],
 
-  Maths: [
-    "Calculus",
-    "Differentiation",
-    "Integration",
-    "Probability",
-    "Trigonometry",
-    "Matrices",
-    "Determinants",
-    "Vectors",
-  ],
+    // 🧪 CHEMISTRY
+    Chemistry: [
+        "reaction", "chemical", "equation", "mole", "molar",
+        "oxidation", "reduction", "electrolysis",
+        "acid", "base", "salt", "ph", "compound", "mixture",
+        "organic", "inorganic", "carbon", "hydrocarbon"
+    ],
 
-  Biology: [
-    "Genetics",
-    "Cell Biology",
-    "Human Physiology",
-    "Plant Physiology",
-    "Ecology",
-    "Evolution",
-    "Biotechnology",
-  ],
+    // 🌱 BIOLOGY
+    Biology: [
+        "cell", "tissue", "organ", "respiration",
+        "photosynthesis", "enzyme", "genetics",
+        "reproduction", "plant", "animal", "ecosystem",
+        "nutrition", "digestion", "circulation"
+    ],
 
-  SST: [
-    "History",
-    "Geography",
-    "Civics",
-    "Economics",
-    "Political Science",
-  ],
+    // 📊 BUSINESS STUDIES
+    Business: [
+        "management", "planning", "organising", "staffing",
+        "directing", "controlling", "marketing", "finance",
+        "business", "entrepreneur", "enterprise"
+    ],
 
-  Commerce: [
-    "Accounting",
-    "Partnership",
-    "Company Accounts",
-    "Economics",
-    "Business Studies",
-    "Statistics",
-  ],
+    // 💰 ACCOUNTANCY
+    Accountancy: [
+        "debit", "credit", "journal", "ledger", "balance",
+        "trial", "profit", "loss", "capital", "assets",
+        "liabilities", "depreciation", "goodwill"
+    ],
+
+    // 📈 ECONOMICS
+    Economics: [
+        "demand", "supply", "elasticity", "market",
+        "inflation", "gdp", "national income",
+        "production", "consumption", "utility"
+    ],
+
+    // 🌍 SST
+    SST: [
+        "history", "geography", "civics", "constitution",
+        "democracy", "parliament", "resources", "climate",
+        "population", "industry", "agriculture"
+    ],
+
+    // 💻 IT / CS
+    IT: [
+        "algorithm", "program", "code", "software",
+        "hardware", "database", "network", "internet",
+        "python", "java", "html", "css", "computer"
+    ]
 };
 
-/* =========================
-   HELPERS
-========================= */
+/* ================================
+   🧠 HELPER FUNCTIONS
+================================ */
 
-function detectSubject(text) {
-  for (const subject in SUBJECT_TOPICS) {
-    for (const topic of SUBJECT_TOPICS[subject]) {
-      if (text.includes(topic.toLowerCase())) {
-        return subject;
-      }
+function normalize(text) {
+    return text.toLowerCase();
+}
+
+function countKeywords(text) {
+    const scores = {};
+    const cleanText = normalize(text);
+
+    for (const subject in SUBJECT_KEYWORDS) {
+        scores[subject] = 0;
+
+        SUBJECT_KEYWORDS[subject].forEach(keyword => {
+            const regex = new RegExp(`\\b${keyword}\\b`, "g");
+            const matches = cleanText.match(regex);
+            if (matches) scores[subject] += matches.length;
+        });
     }
-  }
-  return "General";
+
+    return scores;
 }
 
-function analyzeTopics(text, topics) {
-  const counts = {};
-  topics.forEach((t) => (counts[t] = 0));
-
-  topics.forEach((topic) => {
-    const regex = new RegExp(topic, "gi");
-    const matches = text.match(regex);
-    if (matches) counts[topic] += matches.length;
-  });
-
-  return counts;
-}
-
-/* =========================
-   ROUTE
-========================= */
+/* ================================
+   🚀 ANALYZE ROUTE
+================================ */
 
 router.post("/analyze", upload.array("pdfs"), async (req, res) => {
-  try {
-    if (!req.files || req.files.length === 0) {
-      return res.json({
-        prediction_sentence: "Not enough data to generate prediction.",
-        top_topics: [],
-      });
+    try {
+        if (!req.files || req.files.length === 0) {
+            return res.json({
+                prediction_sentence: "Please upload at least one PDF.",
+                top_topics: []
+            });
+        }
+
+        let combinedText = "";
+
+        for (const file of req.files) {
+            const parsed = await pdfParse(file.buffer);
+            combinedText += " " + parsed.text;
+        }
+
+        const scores = countKeywords(combinedText);
+        const totalScore = Object.values(scores).reduce((a, b) => a + b, 0);
+
+        if (totalScore === 0) {
+            return res.json({
+                prediction_sentence:
+                    "Analysis based on theory-heavy papers. Prediction confidence is low.",
+                top_topics: []
+            });
+        }
+
+        // 🔥 convert to probabilities
+        let topics = Object.entries(scores).map(([topic, count]) => ({
+            topic,
+            probability: Math.round((count / totalScore) * 100)
+        }));
+
+        // ❌ remove very low probability topics (<=2%)
+        topics = topics.filter(t => t.probability > 2);
+
+        // 🔝 sort descending
+        topics.sort((a, b) => b.probability - a.probability);
+
+        const topTopic = topics[0];
+
+        return res.json({
+            prediction_sentence: topTopic
+                ? `${topTopic.topic} has high chances of appearing again.`
+                : "Prediction could not be determined confidently.",
+            top_topics: topics
+        });
+
+    } catch (err) {
+        console.error("PDF ANALYSIS ERROR:", err);
+        res.json({
+            prediction_sentence:
+                "PDF analysis failed due to unreadable content.",
+            top_topics: []
+        });
     }
-
-    let combinedText = "";
-
-    for (const file of req.files) {
-      const data = await pdfParse(file.buffer);
-      combinedText += data.text.toLowerCase();
-    }
-
-    const subject = detectSubject(combinedText);
-    const topics =
-      SUBJECT_TOPICS[subject] || Object.values(SUBJECT_TOPICS).flat();
-
-    const topicCounts = analyzeTopics(combinedText, topics);
-    const total = Object.values(topicCounts).reduce((a, b) => a + b, 0);
-
-    if (total < 3) {
-      return res.json({
-        prediction_sentence: "Not enough data to generate prediction.",
-        top_topics: [],
-      });
-    }
-
-    const sorted = Object.entries(topicCounts)
-      .filter(([_, c]) => c > 0)
-      .sort((a, b) => b[1] - a[1]);
-
-    const topTopics = sorted.map(([topic, count]) => ({
-      topic,
-      probability: Math.round((count / total) * 100),
-    }));
-
-    const prediction_sentence = `${topTopics[0].topic} has high chances of appearing again.`;
-
-    res.json({
-      subject,
-      prediction_sentence,
-      top_topics: topTopics,
-    });
-  } catch (err) {
-    console.error("PDF ANALYSIS ERROR:", err);
-    res.status(500).json({ error: "PDF analysis failed" });
-  }
 });
 
 module.exports = router;

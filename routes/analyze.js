@@ -11,27 +11,12 @@ router.post("/analyze", upload.single("pdf"), async (req, res) => {
       return res.status(400).json({ error: "No PDF uploaded" });
     }
 
-    // ✅ THIS IS THE FIX
-    const data = await pdfParse(req.file.buffer);
-    const text = data.text || "";
+    const parsed = await pdfParse(req.file.buffer);
 
-    // ⚠️ TEMP DEMO LOGIC (real extraction baad me)
-    const papers = [
-      {
-        topics: ["Electrostatics", "Optics"],
-        question_types: ["MCQ", "Numerical"],
-      },
-    ];
-
-    // ===== EXISTING LOGIC =====
-    const totalPapers = papers.length;
-
-    const prediction_sentence =
-      "Based on analysis of last 1 papers, Electrostatics appeared 2 times and has a high probability (50%) of appearing again.";
-
+    // 👇 abhi demo response (PDF parsing confirm karne ke liye)
     res.json({
-      total_papers: totalPapers,
-      prediction_sentence,
+      prediction_sentence:
+        "PDF successfully parsed. Analysis pipeline working.",
       top_topics: [
         { topic: "Electrostatics", probability: 50 },
         { topic: "Optics", probability: 50 },

@@ -1,144 +1,100 @@
 const express = require("express");
-const multer = require("multer");
-const pdfParse = require("pdf-parse");
+const router = express.Router();
 
 const generatePredictionSentence = require("../utils/predictionGenerator");
+const cleanQuestionTypes = require("../utils/cleanQuestionTypes");
+const categorizeQuestionType = require("../utils/categorizeQuestionType");
 
-const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
-
-/* ===============================
-   TOPIC KEYWORDS
-================================ */
-const TOPIC_KEYWORDS = {
-  Trigonometry: ["sin", "cos", "tan"],
-  Algebra: ["quadratic", "polynomial", "matrix"],
-  Calculus: ["derivative", "integral", "limit"],
-  Probability: ["probability", "random"],
-  Programming: ["function", "loop", "array"],
-  Genetics: ["dna", "gene", "inheritance"]
-};
-
-/* ===============================
-   QUESTION EXTRACTOR
-================================ */
-function extractQuestions(text) {
-  return text
-    .split("\n")
-    .map(l => l.trim())
-    .filter(l =>
-      l.length > 25 &&
-      (
-        l.endsWith("?") ||
-        l.toLowerCase().startsWith("find") ||
-        l.toLowerCase().startsWith("calculate") ||
-        l.toLowerCase().startsWith("derive") ||
-        l.toLowerCase().startsWith("prove")
-      )
-    );
-}
-
-/* ===============================
-   NORMALIZE QUESTION
-================================ */
-function normalizeQuestion(q) {
-  return q
-    .toLowerCase()
-    .replace(/[^a-z0-9 ]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/* ===============================
-   ROUTE
-================================ */
-router.post("/analyze", upload.array("pdfs"), async (req, res) => {
+router.post("/analyze", async (req, res) => {
   try {
-    if (!req.files || req.files.length === 0) {
-      return res.status(400).json({ error: "No PDFs uploaded" });
+    const uploadedPapers = req.body;
+
+    if (!uploadedPapers || uploadedPapers.length === 0) {
+      return res.status(400).json({ error: "No data received" });
     }
 
-    let topicCount = {};
-    let questionMap = {};
-    let totalPapers = req.files.length;
+    // ----------------------------
+    // STEP 1: Count topics + map questions
+    // ----------------------------
+    const topicCount = {};
+    const questionMap = {};
 
-    /* ========== PDF LOOP ========== */
-    for (const file of req.files) {
-      const data = await pdfParse(file.buffer);
-      const text = data.text.toLowerCase();
+    uploadedPapers.forEach((paper) => {
+      paper.questions.forEach((q) => {
+        const topic = q.topic || "General";
+        const questionText = q.question?.trim();
 
-      // topics
-      Object.entries(TOPIC_KEYWORDS).forEach(([topic, keys]) => {
-        keys.forEach(k => {
-          if (text.includes(k)) {
-            topicCount[topic] = (topicCount[topic] || 0) + 1;
-          }
-        });
-      });
+        if (!questionText) return;
 
-      // questions
-      const questions = extractQuestions(data.text);
-      questions.forEach(q => {
-        const norm = normalizeQuestion(q);
-        if (!questionMap[norm]) {
-          questionMap[norm] = {
-            original: q,
-            count: 1
+        topicCount[topic] = (topicCount[topic] || 0) + 1;
+
+        if (!questionMap[questionText]) {
+          questionMap[questionText] = {
+            count: 1,
+            topic
           };
         } else {
-          questionMap[norm].count += 1;
+          questionMap[questionText].count += 1;
         }
       });
-    }
+    });
 
-    /* ===============================
-       REPEATED QUESTIONS
-    ================================ */
-    const repeatedQuestions = Object.values(questionMap)
-      .filter(q => q.count >= 2)
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 8)
-      .map(q => ({
-        question: q.original,
-        repeated: q.count
-      }));
-
-    /* ===============================
-       TOPICS + PROBABILITY
-    ================================ */
-    const totalTopicHits = Object.values(topicCount).reduce((a, b) => a + b, 0);
+    // ----------------------------
+    // STEP 2: Top Topics
+    // ----------------------------
+    const totalQuestions = Object.values(topicCount).reduce(
+      (a, b) => a + b,
+      0
+    );
 
     const topTopics = Object.entries(topicCount)
       .map(([topic, count]) => ({
         topic,
-        probability: Math.round((count / totalTopicHits) * 100)
+        percentage: Number(((count / totalQuestions) * 100).toFixed(2)),
       }))
-      .filter(t => t.probability >= 5)
-      .sort((a, b) => b.probability - a.probability);
+      .sort((a, b) => b.percentage - a.percentage);
 
-    const topPrediction = topTopics[0];
+    const topTopicNames = topTopics.slice(0, 3).map(t => t.topic);
 
-    const predictionSentence = generatePredictionSentence({
-      topic: topPrediction.topic,
-      appearedCount: topicCount[topPrediction.topic],
-      totalPapers,
-      probabilityPercent: topPrediction.probability
-    });
+    // ----------------------------
+    // STEP 3: Repeated Questions (ONLY top topics)
+    // ----------------------------
+    const repeatedQuestions = Object.entries(questionMap)
+      .filter(([_, data]) => data.count > 1)
+      .filter(([_, data]) => topTopicNames.includes(data.topic))
+      .map(([question, data]) => ({
+        question,
+        timesAsked: data.count,
+        topic: data.topic
+      }));
 
-    /* ===============================
-       FINAL RESPONSE
-    ================================ */
+    // ----------------------------
+    // STEP 4: Question Types (existing logic)
+    // ----------------------------
+    const rawTypes = uploadedPapers.flatMap(p =>
+      p.questions.map(q => categorizeQuestionType(q.question))
+    );
+
+    const questionTypes = cleanQuestionTypes(rawTypes);
+
+    // ----------------------------
+    // STEP 5: Prediction
+    // ----------------------------
+    const prediction = generatePredictionSentence(topTopics);
+
+    // ----------------------------
+    // FINAL RESPONSE
+    // ----------------------------
     res.json({
-      total_papers: totalPapers,
-      prediction_sentence: predictionSentence,
-      prediction: topPrediction,
-      top_topics: topTopics,
-      repeated_questions: repeatedQuestions
+      prediction,
+      topTopics,
+      repeatedQuestions,
+      questionTypes
     });
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "PDF analysis failed" });
+    res.status(500).json({ error: "Analysis failed" });
   }
 });
 

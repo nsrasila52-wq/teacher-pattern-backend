@@ -10,52 +10,48 @@ const upload = multer({ storage: multer.memoryStorage() });
 ========================= */
 const SUBJECT_KEYWORDS = {
   Mathematics: [
-    "algebra","trigonometry","geometry","calculus","integration",
-    "derivative","equation","matrix","vector","probability",
-    "statistics","mensuration","logarithm","coordinate","graph"
+    "algebra","trigonometry","calculus","geometry","integration","derivative",
+    "limit","equation","matrix","vector","probability","statistics","mensuration",
+    "logarithm","coordinate","graph"
   ],
   Physics: [
-    "motion","force","work","energy","power","gravitation",
-    "current","electricity","magnetism","optics","lens","mirror",
-    "wave","ray","thermodynamics","heat"
+    "current","electric","electricity","ohm","resistance","circuit",
+    "force","motion","energy","work","power","gravitation",
+    "wave","optics","ray","mirror","lens","magnet","field"
   ],
   Chemistry: [
-    "acid","base","salt","reaction","mole","stoichiometry",
-    "organic","inorganic","periodic","bond","electrochemistry",
-    "oxidation","reduction"
+    "acid","base","salt","reaction","mole","stoichiometry","periodic",
+    "bond","organic","inorganic","oxidation","reduction"
   ],
   Biology: [
-    "cell","dna","rna","genetics","photosynthesis","respiration",
-    "evolution","ecology","reproduction","enzyme","protein"
+    "cell","tissue","dna","rna","genetics","evolution","photosynthesis",
+    "respiration","enzyme","protein","hormone"
   ],
   ComputerScience: [
-    "algorithm","program","loop","function","array","stack",
-    "queue","binary","sql","database","python","java","c++"
+    "algorithm","program","loop","array","stack","queue","binary",
+    "function","database","sql","python","java"
   ],
   Commerce: [
-    "account","accounting","ledger","journal","balance sheet",
-    "profit","loss","business","economics","demand","supply","market"
+    "account","accounting","journal","ledger","profit","loss",
+    "balance","economics","demand","supply","market"
   ],
   Economics: [
-    "microeconomics","macroeconomics","inflation","gdp",
-    "national income","demand","supply","elasticity"
+    "demand","supply","elasticity","cost","revenue","market","inflation"
   ],
   Psychology: [
-    "learning","memory","intelligence","emotion",
-    "personality","motivation","behavior","stress"
+    "behavior","learning","memory","intelligence","emotion","motivation"
   ]
 };
 
 /* =========================
    HELPERS
 ========================= */
-
 const cleanText = (text) =>
   text
-    .toLowerCase()
-    .replace(/\r/g, "\n")
-    .replace(/[^\w\s?.]/g, " ")
+    .replace(/\r/g, "")
+    .replace(/\t/g, " ")
     .replace(/\s+/g, " ")
+    .toLowerCase()
     .trim();
 
 const isInstructionLine = (line) => {
@@ -64,60 +60,35 @@ const isInstructionLine = (line) => {
     line.includes("answer any") ||
     line.includes("attempt any") ||
     line.includes("all questions") ||
-    line.includes("section") ||
     line.includes("time allowed") ||
     line.includes("maximum marks") ||
-    line.includes("choose the correct")
+    line.includes("section")
   );
 };
 
 const looksLikeQuestion = (line) => {
   return (
     line.endsWith("?") ||
+    line.match(/^\d+[\).]/) ||
     line.startsWith("what ") ||
     line.startsWith("why ") ||
     line.startsWith("how ") ||
     line.startsWith("define ") ||
     line.startsWith("explain ") ||
-    line.startsWith("derive ") ||
-    line.match(/^\d+\./)
+    line.startsWith("derive ")
   );
 };
 
 const normalizeQuestion = (q) =>
   q
-    .toLowerCase()
-    .replace(/\d+/g, "")
+    .replace(/\d+[\).]/g, "")
     .replace(/[^a-z\s]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
-const detectQuestionType = (q) => {
-  if (q.includes("calculate") || q.includes("find the value"))
-    return "Numerical";
-  if (q.includes("derive") || q.includes("prove"))
-    return "Derivation";
-  return "Theory";
-};
-
-const detectSubject = (text) => {
-  let scores = {};
-  Object.keys(SUBJECT_KEYWORDS).forEach(s => (scores[s] = 0));
-
-  Object.entries(SUBJECT_KEYWORDS).forEach(([subject, keywords]) => {
-    keywords.forEach(k => {
-      if (text.includes(k)) scores[subject]++;
-    });
-  });
-
-  const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-  return sorted[0][1] === 0 ? "General" : sorted[0][0];
-};
-
 /* =========================
    MAIN ROUTE
 ========================= */
-
 router.post("/analyze", upload.array("pdfs"), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
@@ -125,97 +96,73 @@ router.post("/analyze", upload.array("pdfs"), async (req, res) => {
     }
 
     let topicCount = {};
-    let detectedSubjects = {};
     let questionMap = {};
-    let questionTypeMap = {};
+    let detectedSubjects = {};
 
     for (const file of req.files) {
       const data = await pdfParse(file.buffer);
-      const text = cleanText(data.text);
+      const rawText = cleanText(data.text);
 
-      console.log("📄 PDF TEXT SAMPLE:", text.slice(0, 300));
+      const lines = rawText.split(/[\n\.]/);
 
-      const lines = text.split(/\n|\?/);
-
-      lines.forEach(rawLine => {
-        const line = rawLine.trim();
+      lines.forEach(line => {
         if (isInstructionLine(line)) return;
         if (!looksLikeQuestion(line)) return;
 
-        const subject = detectSubject(line);
-        detectedSubjects[subject] = (detectedSubjects[subject] || 0) + 1;
+        const normalizedQ = normalizeQuestion(line);
+        if (normalizedQ.split(" ").length < 6) return;
 
-        Object.entries(SUBJECT_KEYWORDS).forEach(([_, keywords]) => {
+        questionMap[normalizedQ] =
+          (questionMap[normalizedQ] || 0) + 1;
+
+        Object.entries(SUBJECT_KEYWORDS).forEach(([subject, keywords]) => {
           keywords.forEach(k => {
-            if (line.includes(k)) {
+            if (normalizedQ.includes(k)) {
               topicCount[k] = (topicCount[k] || 0) + 1;
+              detectedSubjects[subject] =
+                (detectedSubjects[subject] || 0) + 1;
             }
           });
         });
-
-        const normalized = normalizeQuestion(line);
-        questionMap[normalized] = (questionMap[normalized] || 0) + 1;
-
-        const qType = detectQuestionType(line);
-        questionTypeMap[qType] = (questionTypeMap[qType] || 0) + 1;
       });
     }
 
     /* =========================
-       SUBJECT FILTER (UNCHANGED)
+       TOPICS (UNCHANGED LOGIC)
     ========================= */
-    const mainSubject = Object.entries(detectedSubjects)
-      .sort((a, b) => b[1] - a[1])[0]?.[0] || "General";
-
-    if (mainSubject !== "General") {
-      Object.keys(topicCount).forEach(topic => {
-        const valid = SUBJECT_KEYWORDS[mainSubject]?.some(k =>
-          topic.includes(k)
-        );
-        if (!valid) delete topicCount[topic];
-      });
-    }
-
-    /* =========================
-       TOPICS PROBABILITY (UNCHANGED)
-    ========================= */
-    const total = Object.values(topicCount).reduce((a, b) => a + b, 0);
+    const total = Object.values(topicCount).reduce((a,b)=>a+b,0);
 
     let topics = Object.entries(topicCount)
-      .map(([topic, count]) => ({
+      .map(([topic,count]) => ({
         topic,
         count,
-        probability: total ? Math.round((count / total) * 100) : 0
+        probability: total ? Math.round((count/total)*100) : 0
       }))
       .filter(t => t.probability >= 15)
-      .sort((a, b) => b.probability - a.probability);
+      .sort((a,b)=>b.probability - a.probability);
 
-    const probSum = topics.reduce((a, b) => a + b.probability, 0);
-    if (topics.length && probSum !== 100) {
-      topics[0].probability += 100 - probSum;
+    const sum = topics.reduce((a,b)=>a+b.probability,0);
+    if (topics.length && sum !== 100) {
+      topics[0].probability += (100 - sum);
     }
 
     /* =========================
-       REPEATED QUESTIONS (FIXED)
+       REPEATED QUESTIONS ONLY
     ========================= */
     const repeatedQuestions = Object.entries(questionMap)
-      .filter(([_, count]) => count > 1)
-      .map(([question, count]) => ({
-        question,
+      .filter(([_,count]) => count > 1)
+      .map(([q,count]) => ({
+        question: q,
         repeated: count
-      }));
+      }))
+      .slice(0,15);
 
-    /* =========================
-       FINAL RESPONSE
-    ========================= */
     res.json({
-      subject: mainSubject,
       prediction: topics[0]
         ? `Based on analysis of last ${req.files.length} papers, ${topics[0].topic} has ${topics[0].probability}% probability of appearing again.`
         : "Not enough structured data for prediction.",
       topTopics: topics,
       repeatedQuestions,
-      questionTypes: questionTypeMap,
       disclaimer: "Prediction is probability-based, not guaranteed."
     });
 

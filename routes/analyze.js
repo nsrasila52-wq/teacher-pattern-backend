@@ -5,46 +5,47 @@ const pdfParse = require("pdf-parse");
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-/* =========================
-   SUBJECT KEYWORDS (10th + 12th)
-   ⚠️ UNCHANGED TOPIC LOGIC
-========================= */
+/* ========================= SUBJECT KEYWORDS ========================= */
+/* 10th + 12th ALL MAJOR SUBJECTS */
 const SUBJECT_KEYWORDS = {
   Mathematics: [
-    "algebra","trigonometry","calculus","geometry","integration",
-    "derivative","limit","equation","matrix","vector","probability",
-    "statistics","mensuration","logarithm","coordinate"
+    "algebra","trigonometry","calculus","geometry","integration","derivative",
+    "limit","equation","matrix","vector","probability","statistics","mensuration",
+    "logarithm","coordinate","function","graph"
   ],
   Physics: [
-    "mechanics","motion","force","work","energy","power","gravitation",
-    "kinematics","thermodynamics","heat","optics","lens","mirror",
-    "current","electricity","magnetism","wave","ray","refraction"
+    "motion","force","work","energy","power","gravitation","laws of motion",
+    "kinematics","thermodynamics","heat","optics","lens","mirror","ray",
+    "current","electricity","magnetism","wave","oscillation","electrostatics"
   ],
   Chemistry: [
-    "organic","inorganic","physical chemistry","acid","base","salt",
-    "reaction","mole","stoichiometry","periodic","bond",
-    "electrochemistry","oxidation","reduction"
+    "organic","inorganic","physical chemistry","acid","base","salt","reaction",
+    "mole","stoichiometry","periodic","bond","electrochemistry",
+    "oxidation","reduction","hydrocarbon","polymer"
   ],
   Biology: [
-    "cell","genetics","dna","rna","photosynthesis","respiration",
-    "evolution","ecology","reproduction","enzyme","protein"
+    "cell","genetics","dna","rna","photosynthesis","respiration","evolution",
+    "ecology","reproduction","enzyme","protein","plant","animal","tissue"
   ],
   ComputerScience: [
-    "algorithm","programming","python","java","c++","database",
-    "sql","loop","function","array","stack","queue","binary"
+    "algorithm","programming","python","java","c++","database","sql",
+    "loop","function","array","stack","queue","binary","compiler"
   ],
   Commerce: [
     "business","account","accounting","profit","loss","balance sheet",
-    "ledger","journal","economics","demand","supply","market"
+    "ledger","journal","economics","demand","supply","market","capital"
   ]
 };
 
-/* =========================
-   HELPERS (TOPIC – SAME AS YOURS)
-========================= */
+/* ========================= HELPERS ========================= */
 const cleanText = (text) =>
-  text.toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
+  text
+    .toLowerCase()
+    .replace(/page \d+/g, "")              // page numbers
+    .replace(/section [a-z]/g, "")
+    .replace(/time:\s*\d+/g, "")
+    .replace(/maximum marks:.+/g, "")
+    .replace(/[^a-z0-9?.\n\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -62,59 +63,36 @@ const detectSubject = (text) => {
   return sorted[0][1] === 0 ? "General" : sorted[0][0];
 };
 
-/* =========================
-   QUESTION-SPECIFIC HELPERS
-========================= */
+/* ========================= QUESTION FILTER ========================= */
+const isRealQuestion = (line) => {
+  if (line.length < 30) return false;
+  if (!line.includes("?")) return false;
 
-// ❌ instructions / headers ignore
-const isInstructionLine = (line) => {
-  return (
-    line.includes("time allowed") ||
-    line.includes("maximum marks") ||
-    line.includes("note") ||
-    line.includes("section") ||
-    line.includes("page") ||
-    line.includes("roll no") ||
-    line.includes("question paper") ||
-    line.length < 40
-  );
+  const badStarts = [
+    "instructions","note","section","attempt","time","marks",
+    "choose","internal choice"
+  ];
+  return !badStarts.some(b => line.startsWith(b));
 };
 
-// ✅ question detection
-const isQuestion = (line) => {
-  return (
-    /\?$/.test(line) ||
-    line.startsWith("explain") ||
-    line.startsWith("define") ||
-    line.startsWith("derive") ||
-    line.startsWith("calculate") ||
-    line.startsWith("find") ||
-    line.startsWith("state") ||
-    line.startsWith("prove") ||
-    line.startsWith("why") ||
-    line.startsWith("how")
-  );
-};
-
-// 🔑 normalize for repeat detection
-const normalizeQuestion = (q) =>
-  q.replace(/\d+/g,"")
-   .replace(/\s+/g," ")
-   .trim()
-   .split(" ")
-   .slice(0,14)
-   .join(" ");
-
-// 🧠 question type
 const detectQuestionType = (q) => {
-  if (q.includes("calculate") || q.includes("find")) return "Numerical";
-  if (q.includes("derive") || q.includes("prove")) return "Derivation";
+  if (
+    q.includes("calculate") ||
+    q.includes("find") ||
+    q.includes("determine") ||
+    q.includes("numerical")
+  ) return "Numerical";
+
+  if (
+    q.includes("derive") ||
+    q.includes("prove") ||
+    q.includes("show that")
+  ) return "Derivation";
+
   return "Theory";
 };
 
-/* =========================
-   MAIN ROUTE
-========================= */
+/* ========================= MAIN ROUTE ========================= */
 router.post("/analyze", upload.array("pdfs"), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
@@ -122,52 +100,49 @@ router.post("/analyze", upload.array("pdfs"), async (req, res) => {
     }
 
     let topicCount = {};
-    let detectedSubjects = {};
     let questionMap = {};
+    let detectedSubjects = {};
 
     for (const file of req.files) {
       const data = await pdfParse(file.buffer);
       const text = cleanText(data.text);
 
-      const lines = text.split(/\n|\./);
+      const lines = text.split(/\n|\.|\?/);
 
-      lines.forEach(raw => {
-        const line = raw.trim();
-        if (isInstructionLine(line)) return;
-        if (!isQuestion(line)) return;
+      lines.forEach(rawLine => {
+        const line = rawLine.trim();
+        if (line.length < 20) return;
 
-        // SUBJECT (same as before)
+        /* ===== SUBJECT + TOPICS (UNCHANGED LOGIC) ===== */
         const subject = detectSubject(line);
         detectedSubjects[subject] = (detectedSubjects[subject] || 0) + 1;
 
-        // TOPIC COUNT (unchanged logic)
         Object.entries(SUBJECT_KEYWORDS).forEach(([_, keywords]) => {
-          keywords.forEach(k => {
-            if (line.includes(k)) {
-              topicCount[k] = (topicCount[k] || 0) + 1;
+          keywords.forEach(keyword => {
+            if (line.includes(keyword)) {
+              topicCount[keyword] = (topicCount[keyword] || 0) + 1;
             }
           });
         });
 
-        // 🔥 QUESTION MAP (FIXED)
-        const key = normalizeQuestion(line);
-        if (!questionMap[key]) {
-          questionMap[key] = {
-            question: line,
-            count: 1,
-            type: detectQuestionType(line)
-          };
-        } else {
-          questionMap[key].count++;
+        /* ===== QUESTION DETECTION (NEW FIX) ===== */
+        if (isRealQuestion(line)) {
+          const normalized = line.replace(/\s+/g, " ").trim();
+          if (!questionMap[normalized]) {
+            questionMap[normalized] = {
+              count: 1,
+              type: detectQuestionType(normalized)
+            };
+          } else {
+            questionMap[normalized].count++;
+          }
         }
       });
     }
 
-    /* =========================
-       SUBJECT FILTER (UNCHANGED)
-    ========================= */
-    const mainSubject = Object.entries(detectedSubjects)
-      .sort((a,b)=>b[1]-a[1])[0]?.[0] || "General";
+    /* ========================= SUBJECT FILTER (UNCHANGED) ========================= */
+    const mainSubject =
+      Object.entries(detectedSubjects).sort((a,b)=>b[1]-a[1])[0]?.[0] || "General";
 
     if (mainSubject !== "General") {
       Object.keys(topicCount).forEach(topic => {
@@ -176,10 +151,9 @@ router.post("/analyze", upload.array("pdfs"), async (req, res) => {
       });
     }
 
-    /* =========================
-       TOPICS % (UNCHANGED)
-    ========================= */
+    /* ========================= TOPIC PROBABILITY (UNCHANGED) ========================= */
     const total = Object.values(topicCount).reduce((a,b)=>a+b,0);
+
     let topics = Object.entries(topicCount)
       .map(([topic,count]) => ({
         topic,
@@ -187,30 +161,30 @@ router.post("/analyze", upload.array("pdfs"), async (req, res) => {
         probability: total ? Math.round((count/total)*100) : 0
       }))
       .filter(t => t.probability >= 5)
-      .sort((a,b)=>b.probability-a.probability);
+      .sort((a,b)=>b.probability - a.probability);
 
-    const sum = topics.reduce((a,b)=>a+b.probability,0);
-    if (topics.length && sum !== 100) {
-      topics[0].probability += (100 - sum);
+    const probSum = topics.reduce((a,b)=>a+b.probability,0);
+    if (topics.length && probSum !== 100) {
+      topics[0].probability += (100 - probSum);
     }
 
-    /* =========================
-       🔥 REPEATED QUESTIONS ONLY
-    ========================= */
-    const repeatedQuestions = Object.values(questionMap)
-      .filter(q => q.count > 1)
-      .map(q => ({
-        question: q.question,
-        repeated: q.count,
-        type: q.type
+    /* ========================= REPEATED QUESTIONS (ONLY REPEATED) ========================= */
+    const repeatedQuestions = Object.entries(questionMap)
+      .filter(([_, v]) => v.count > 1)
+      .map(([q, v]) => ({
+        question: q,
+        repeated: v.count,
+        type: v.type
       }))
-      .sort((a,b)=>b.repeated-a.repeated);
+      .sort((a,b)=>b.repeated - a.repeated)
+      .slice(0, 25);
 
+    /* ========================= FINAL RESPONSE ========================= */
     res.json({
       subject: mainSubject,
       prediction: topics[0]
-        ? `Based on analysis of last ${req.files.length} papers, "${topics[0].topic}" has high probability (${topics[0].probability}%).`
-        : "Not enough data for prediction.",
+        ? `Based on analysis of last ${req.files.length} papers, ${topics[0].topic} has ${topics[0].probability}% probability of appearing again.`
+        : "Not enough structured data for prediction.",
       topTopics: topics,
       repeatedQuestions,
       disclaimer: "Prediction is probability-based, not guaranteed."

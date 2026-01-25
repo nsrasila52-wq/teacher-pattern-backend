@@ -9,119 +9,88 @@ const upload = multer({ storage: multer.memoryStorage() });
    CLASS 10 SUBJECT KEYWORDS
 ========================= */
 const SUBJECT_KEYWORDS = {
-  Mathematics: [
-    "algebra","trigonometry","calculus","geometry","integration",
-    "derivative","equation","matrix","probability","statistics",
-    "mensuration","coordinate","polynomial","linear","quadratic"
-  ],
-  Physics: [
-    "motion","force","laws of motion","work","energy","power",
-    "gravitation","electricity","magnetism","reflection","refraction",
-    "optics","current","resistance"
-  ],
-  Chemistry: [
-    "acid","base","salt","reaction","oxidation","reduction",
-    "periodic table","carbon","compound","metal","non metal",
-    "electrolysis"
-  ],
-  Biology: [
-    "life processes","nutrition","respiration","transportation",
-    "reproduction","heredity","evolution","environment","ecosystem",
-    "resources"
-  ],
-  History: [
-    "nationalism","revolution","colonialism","movement","gandhi",
-    "freedom","war","civil disobedience"
-  ],
-  Geography: [
-    "resources","agriculture","industries","minerals","climate",
-    "soil","water","manufacturing"
-  ],
-  Civics: [
-    "democracy","constitution","rights","duties","election",
-    "government","parliament","judiciary"
-  ],
-  Economics: [
-    "development","poverty","unemployment","globalisation",
-    "sectors of economy","money","credit","income"
-  ],
-  Business: [
-    "business","entrepreneur","management","organisation",
-    "marketing","planning","directing"
-  ],
-  Accountancy: [
-    "account","journal","ledger","trial balance","profit",
-    "loss","balance sheet","depreciation"
-  ],
-  Psychology: [
-    "behaviour","learning","memory","emotion","motivation",
-    "intelligence","personality"
-  ]
+  Physics: ["force","energy","current","electric","magnetic","field","ray","lens","mirror","semiconductor","pn junction","capacitor","resistance"],
+  Chemistry: ["acid","base","salt","reaction","oxidation","reduction","carbon","compound","metal"],
+  Biology: ["life process","respiration","reproduction","heredity","evolution","environment"],
+  Mathematics: ["equation","prove","calculate","graph","triangle","circle","probability","statistics"],
+  History: ["movement","revolution","colonial","nationalism"],
+  Geography: ["resources","agriculture","industry","climate"],
+  Civics: ["democracy","constitution","rights","government"],
+  Economics: ["development","poverty","unemployment","globalisation"]
 };
 
 /* =========================
-   HELPERS
+   CLEANERS
 ========================= */
-const cleanText = (text) =>
-  text
+const normalize = (t) =>
+  t
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
+    .replace(/[^a-z0-9().]/g, " ")
     .trim();
 
-/* 🔥 QUESTION EXTRACTOR */
+/* =========================
+   REMOVE INSTRUCTIONS
+========================= */
+const stripInstructions = (text) => {
+  const idx = text.search(/section\s+a/i);
+  return idx !== -1 ? text.slice(idx) : text;
+};
+
+/* =========================
+   REAL QUESTION EXTRACTOR
+========================= */
 const extractQuestions = (text) => {
-  return text
-    .split(/\n+/)
-    .map(l => l.trim())
-    .filter(l =>
-      l.length > 35 &&
-      (
-        /^q\d+/i.test(l) ||
-        /^\d+[\).\s]/.test(l) ||
-        /(explain|define|calculate|prove|derive|find|why|how|what)/i.test(l)
-      )
+  const cleaned = stripInstructions(text);
+
+  const raw = cleaned.split(/\n(?=\d{1,2}[\.\)]|\(?\d{1,2}[a-z]?\))/i);
+
+  return raw
+    .map(q => q.replace(/\n/g, " ").trim())
+    .filter(q =>
+      q.length > 60 &&
+      /[a-z]/i.test(q) &&
+      !q.match(/page \d|time allowed|general instructions/i)
     );
 };
 
-const detectSubject = (text) => {
-  let scores = {};
-  Object.keys(SUBJECT_KEYWORDS).forEach(s => scores[s] = 0);
+const detectSubject = (q) => {
+  let best = { subject: "General", score: 0 };
 
-  for (const [subject, keywords] of Object.entries(SUBJECT_KEYWORDS)) {
-    keywords.forEach(k => {
-      if (text.includes(k)) scores[subject]++;
+  for (const [subject, keys] of Object.entries(SUBJECT_KEYWORDS)) {
+    let score = 0;
+    keys.forEach(k => {
+      if (q.includes(k)) score++;
     });
+    if (score > best.score) best = { subject, score };
   }
-
-  const sorted = Object.entries(scores).sort((a,b) => b[1] - a[1]);
-  return sorted[0][1] === 0 ? "General" : sorted[0][0];
+  return best.subject;
 };
 
 /* =========================
-   MAIN ROUTE
+   ROUTE
 ========================= */
 router.post("/analyze", upload.array("pdfs"), async (req, res) => {
   try {
-    if (!req.files || req.files.length === 0) {
+    if (!req.files?.length) {
       return res.status(400).json({ error: "No PDFs uploaded" });
     }
 
     let topicCount = {};
     let questionMap = {};
-    let detectedSubjects = {};
+    let subjectCount = {};
 
     for (const file of req.files) {
       const data = await pdfParse(file.buffer);
-      const text = cleanText(data.text);
+      const text = normalize(data.text);
       const questions = extractQuestions(text);
 
       questions.forEach(q => {
         const subject = detectSubject(q);
-        detectedSubjects[subject] = (detectedSubjects[subject] || 0) + 1;
+        subjectCount[subject] = (subjectCount[subject] || 0) + 1;
 
-        Object.entries(SUBJECT_KEYWORDS).forEach(([_, keywords]) => {
-          keywords.forEach(k => {
+        Object.entries(SUBJECT_KEYWORDS).forEach(([_, keys]) => {
+          keys.forEach(k => {
             if (q.includes(k)) {
               topicCount[k] = (topicCount[k] || 0) + 1;
               questionMap[q] = (questionMap[q] || 0) + 1;
@@ -131,48 +100,42 @@ router.post("/analyze", upload.array("pdfs"), async (req, res) => {
       });
     }
 
-    /* MAIN SUBJECT */
-    const mainSubject =
-      Object.entries(detectedSubjects).sort((a,b)=>b[1]-a[1])[0]?.[0] || "General";
-
-    /* TOPICS + PROBABILITY */
+    /* TOPICS */
     const total = Object.values(topicCount).reduce((a,b)=>a+b,0);
 
     let topics = Object.entries(topicCount)
       .map(([topic,count]) => ({
         topic,
-        probability: total ? Math.round((count / total) * 100) : 0
+        probability: Math.round((count / total) * 100)
       }))
       .filter(t => t.probability >= 15)
-      .sort((a,b)=>b.probability - a.probability);
+      .sort((a,b)=>b.probability-a.probability);
 
-    const sum = topics.reduce((a,b)=>a+b.probability,0);
-    if (sum !== 100 && topics.length) {
+    if (topics.length) {
+      const sum = topics.reduce((a,b)=>a+b.probability,0);
       topics[0].probability += (100 - sum);
     }
 
     /* REPEATED QUESTIONS */
     const repeatedQuestions = Object.entries(questionMap)
-      .filter(([_,count]) => count > 1)
-      .map(([question,count]) => ({
+      .filter(([_,c]) => c > 1)
+      .map(([question,c]) => ({
         question,
-        repeated: count
+        repeated: c
       }))
-      .slice(0, 15);
+      .slice(0, 10);
 
     res.json({
-      subject: mainSubject,
       prediction: topics[0]
-        ? `Based on previous papers, "${topics[0].topic}" has high chances (${topics[0].probability}%) of appearing again.`
-        : "Not enough data for prediction.",
+        ? `"${topics[0].topic}" has high chances (${topics[0].probability}%) based on previous papers.`
+        : "Not enough structured data for prediction.",
       topTopics: topics,
-      repeatedQuestions,
-      disclaimer: "Prediction is probability-based, not guaranteed."
+      repeatedQuestions
     });
 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "PDF analysis failed" });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Analysis failed" });
   }
 });
 
